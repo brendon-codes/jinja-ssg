@@ -1,0 +1,201 @@
+#!/usr/bin/env python3
+
+from typing import List, Tuple
+import argparse
+import sys
+import os
+import shutil
+import glob
+
+import jinja2
+
+
+def make_jinja_env(inpath: str) -> jinja2.Environment:
+    return (
+        jinja2.Environment(
+            loader=jinja2.FileSystemLoader([inpath], followlinks=True),
+            autoescape=jinja2.select_autoescape(["html"])
+        )
+    )
+
+
+def process_file(
+    inpath: str,
+    outpath: str,
+    filename: str,
+    jinja_env: jinja2.Environment,
+) -> bool:
+    assert os.path.commonpath([inpath, filename]) == inpath
+    assert \
+        filename.endswith(".html.jinja") or \
+        filename.endswith(".html.jinja2") or \
+        filename.endswith(".html.j2")
+    tplpath = filename[len(inpath):].lstrip("/")
+    tplfullpath = os.path.join(outpath, tplpath)
+    ext = os.path.splitext(tplfullpath)[1]
+    tploutpath = tplfullpath[0:-len(ext)]
+    tpldirpath = os.path.dirname(tplfullpath)
+    template = jinja_env.get_template(tplpath)
+    output = template.render()
+    if not os.path.isdir(tpldirpath):
+        os.makedirs(tpldirpath, exist_ok=True)
+    with open(tploutpath, "w") as wfile:
+        wfile.write(output)
+    print("Write: %(infile)s -> %(outfile)s" % {
+        "infile": filename,
+        "outfile": tploutpath,
+    })
+    return True
+
+
+def find_writefiles(inpath: str) -> List[str]:
+    foundfiles: List[str] = []
+    for root, _dirs, files in os.walk(inpath, followlinks=False):
+        for fil in files:
+            if fil.startswith("."):
+                continue
+            if fil.startswith("_"):
+                continue
+            if (
+                (not fil.endswith(".html.jinja")) and
+                (not fil.endswith(".html.jinja2")) and
+                (not fil.endswith(".html.j2"))
+            ):
+                continue
+            fullpath = os.path.join(root, fil)
+            foundfiles.append(fullpath)
+    return foundfiles
+
+
+def writefiles(inpath: str, outpath: str) -> bool:
+    jinja_env = make_jinja_env(inpath)
+    foundfiles = find_writefiles(inpath)
+    for filename in foundfiles:
+        process_file(inpath, outpath, filename, jinja_env)
+    return True
+
+
+def find_cleanfiles(outpath: str) -> List[str]:
+    foundfiles: List[str] = []
+    for root, _dirs, files in os.walk(outpath, followlinks=False):
+        for fil in files:
+            if fil.startswith("."):
+                continue
+            if not fil.endswith(".html"):
+                continue
+            fullpath = os.path.join(root, fil)
+            foundfiles.append(fullpath)
+    return foundfiles
+
+
+def cleanfiles(outpath: str) -> Tuple[int, int]:
+    assert os.path.basename(outpath) == "staticyah_out"
+    foundfiles = find_cleanfiles(outpath)
+    good = 0
+    bad = 0
+    for foundfile in foundfiles:
+        try:
+            os.remove(foundfile)
+        except Exception as _e:
+            print("Cound not delete file: %(fil)s" % {"fil": foundfile})
+            bad += 1
+        else:
+            print("Removing: %(fil)s" % {"fil": foundfile})
+            good += 1
+    return [good, bad]
+
+
+def cleandirs(outpath: str) -> Tuple[int, int]:
+    assert os.path.basename(outpath) == "staticyah_out"
+    founddirs = find_cleandirs(outpath)
+    good = 0
+    bad = 0
+    for founddir in founddirs:
+        try:
+            os.rmdir(founddir)
+        except Exception as _e:
+            print("Cound not delete directory: %(dir)s" % {"dir": founddir})
+            bad += 1
+        else:
+            print("Removing: %(dir)s" % {"dir": founddir})
+            good += 1
+    return [good, bad]
+
+
+def find_cleandirs(outpath: str) -> List[str]:
+    founddirs: List[str] = []
+    for root, _dirs, files in os.walk(outpath, followlinks=False):
+        if len(files) == 0:
+            founddirs.append(root)
+    return founddirs
+
+
+def clean(outpath: str) -> bool:
+    cleanfiles(outpath)
+    cleandirs(outpath)
+    return True
+
+
+class TArgs:
+    inpath: str
+    outpath: str
+
+
+def buildargs() -> TArgs:
+    aparser = argparse.ArgumentParser(description="Convert Jinja templates")
+    aparser.add_argument(
+        "inpath",
+        metavar="INPATH",
+        type=str,
+        help="Path to input directory",
+    )
+    aparser.add_argument(
+        "outpath",
+        metavar="OUTPATH",
+        type=str,
+        help="Path to output directory",
+    )
+    args = aparser.parse_args()
+    if os.path.islink(args.inpath):
+        aparser.error("INPATH cannot be a symlink.")
+    if os.path.islink(args.outpath):
+        aparser.error("OUTPATH cannot be a symlink.")
+    if not os.path.isdir(args.inpath):
+        aparser.error("INPATH is not valid directory.")
+    if not os.path.isdir(args.outpath):
+        aparser.error("OUTPATH is not valid directory.")
+    inpath_real = os.path.realpath(args.inpath)
+    outpath_real = os.path.realpath(args.outpath)
+    args_common = os.path.commonpath([inpath_real, outpath_real])
+    if args_common == inpath_real:
+        aparser.error("OUTPATH cannot be a subdirectory of INPATH.")
+    if args_common == outpath_real:
+        aparser.error("INPATH cannot be a subdirectory of OUTPATH.")
+    cwd_common = os.path.commonpath([outpath_real, os.getcwd()])
+    if cwd_common == outpath_real:
+        aparser.error(
+            "Current working directory cannot be a subdirectory of OUTPATH."
+        )
+    if os.path.basename(outpath_real) != "staticyah_out":
+        aparser.error("OUTPATH directory must be named 'staticyah_out'.")
+    if not os.access(outpath_real, os.W_OK):
+        aparser.error("OUTPATH directory is not writeable.")
+    if not os.access(inpath_real, os.R_OK):
+        aparser.error("INPATH directory is not readable.")
+    return args
+
+
+def buildpaths(args: TArgs) -> Tuple[str, str]:
+    return (os.path.realpath(args.inpath), os.path.realpath(args.outpath))
+
+
+def main() -> None:
+    args = buildargs()
+    inpath, outpath = buildpaths(args)
+    clean(outpath)
+    writefiles(inpath, outpath)
+    sys.exit(0)
+
+
+if __name__ == "__main__":
+    main()
